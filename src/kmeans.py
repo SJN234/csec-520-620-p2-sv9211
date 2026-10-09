@@ -25,7 +25,7 @@ from .distances import euclidean_sqdist, mahalanobis_sqdist
 class KMeansReference:
     """scikit-learn KMeans, wrapped in the same interface as KMeansScratch."""
 
-    def __init__(self, k=3, init="kmeans++", n_init=10, max_iter=300, tol=1e-4,
+    def __init__(self, k=3, init="kmeans++", n_init=30, max_iter=300, tol=1e-4,
                  seed=42, **_ignored):
         self.k, self.n_init, self.max_iter, self.tol, self.seed = k, n_init, max_iter, tol, seed
         self.init = "k-means++" if init in ("kmeans++", "k-means++") else "random"
@@ -113,11 +113,41 @@ class KMeansScratch:
         Use ``rng`` (a numpy Generator) for every random draw so runs are
         reproducible. ``self._sqdist`` gives you the distances you need.
 
-        TODO(student): implement this.
+       TODO(student): implement this.
         """
-        raise NotImplementedError(
-            "Implement _init_centroids in src/kmeans.py (Project 2, Task 1)."
-        )
+        n = X.shape[0]
+
+        if self.init == "random":
+            idx = rng.choice(n, size=self.k, replace=False)
+            return X[idx].copy()
+
+        if self.init in ("kmeans++", "k-means++"):
+            centroids = np.empty((self.k, X.shape[1]), dtype=X.dtype)
+        
+            first_idx = rng.integers(n)
+            centroids[0] = X[first_idx]
+
+            for i in range(1, self.k):
+                # distance from every point to its NEAREST already-chosen centroid
+                d2 = self._sqdist(X, centroids[:i])          # (n, i)
+                min_d2 = d2.min(axis=1)                      # (n,)
+
+                total = min_d2.sum()
+                if total <= 0:
+                    # all remaining points coincide with existing centroids;
+                    # fall back to uniform choice to avoid a degenerate distribution
+                    probs = np.full(n, 1.0 / n)
+                else:
+                    probs = min_d2 / total
+
+                next_idx = rng.choice(n, p=probs)
+                centroids[i] = X[next_idx]
+
+            return centroids
+
+        #raise NotImplementedError(
+            #"Implement _init_centroids in src/kmeans.py (Project 2, Task 1)."
+        #)
 
     def _assign(self, X: np.ndarray, centroids: np.ndarray) -> np.ndarray:
         """Assignment step: index of the nearest centroid for each point.
@@ -127,9 +157,13 @@ class KMeansScratch:
         TODO(student): implement this.
           Hint: one call to ``self._sqdist`` plus an argmin along the right axis.
         """
-        raise NotImplementedError(
-            "Implement _assign in src/kmeans.py (Project 2, Task 1)."
-        )
+        
+        d2 = self._sqdist(X, centroids)             
+        return d2.argmin(axis=1).astype("int64")
+        
+        #raise NotImplementedError(
+            #"Implement _assign in src/kmeans.py (Project 2, Task 1)."
+        #)
 
     def _update(self, X: np.ndarray, labels: np.ndarray, centroids: np.ndarray) -> np.ndarray:
         """Update step: move each centroid to the mean of its assigned points.
@@ -142,9 +176,22 @@ class KMeansScratch:
 
         TODO(student): implement this.
         """
-        raise NotImplementedError(
-            "Implement _update in src/kmeans.py (Project 2, Task 1)."
-        )
+        new_centroids = centroids.copy()
+
+        for j in range(self.k):
+            mask = labels == j
+            if np.any(mask):
+                new_centroids[j] = X[mask].mean(axis=0)
+            else:
+                # empty cluster: re-seed at the point farthest from this centroid
+                d2 = self._sqdist(X, centroids[j:j + 1]).ravel()
+                farthest_idx = d2.argmax()
+                new_centroids[j] = X[farthest_idx]
+
+        return new_centroids
+        #raise NotImplementedError(
+            #"Implement _update in src/kmeans.py (Project 2, Task 1)."
+        #)
 
     # -- the fit loop you implement ----------------------------------------
     def fit(self, X: np.ndarray) -> "KMeansScratch":
@@ -169,9 +216,54 @@ class KMeansScratch:
           Seed your generator with ``np.random.default_rng(self.seed)`` once,
           outside the restart loop, so all restarts are reproducible but distinct.
         """
-        raise NotImplementedError(
-            "Implement fit in src/kmeans.py (Project 2, Task 1)."
-        )
+        
+        rng = np.random.default_rng(self.seed)
+
+        best_centroids = None
+        best_labels = None
+        best_inertia = np.inf
+        best_n_iter = None
+
+        for _ in range(self.n_init):
+            centroids = self._init_centroids(X, rng)
+            labels = self._assign(X, centroids)
+
+            n_iter = 0
+            for it in range(self.max_iter):
+                n_iter = it + 1
+                new_centroids = self._update(X, labels, centroids)
+
+                # convergence check: how far did centroids move?
+                shift = np.sqrt(((new_centroids - centroids) ** 2).sum(axis=1)).max()
+
+                new_labels = self._assign(X, new_centroids)
+                labels_changed = not np.array_equal(new_labels, labels)
+
+                centroids = new_centroids
+                labels = new_labels
+
+                if shift < self.tol or not labels_changed:
+                    break
+
+            d2 = self._sqdist(X, centroids)
+            inertia = d2[np.arange(X.shape[0]), labels].sum()
+
+            if inertia < best_inertia:
+                best_inertia = inertia
+                best_centroids = centroids
+                best_labels = labels
+                best_n_iter = n_iter
+
+        self.centroids_ = best_centroids
+        self.labels_ = best_labels
+        self.inertia_ = float(best_inertia)
+        self.n_iter_ = best_n_iter
+        return self
+
+        
+       # raise NotImplementedError(
+            #"Implement fit in src/kmeans.py (Project 2, Task 1)."
+       # )
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         """Assign new points to the fitted centroids."""
